@@ -1,108 +1,74 @@
-
 #include "hal_gpio.h"
+#include "stm32f10x.h"
 
-/* ================= RCC REGISTERS ================= */
-
-#define RCC_APB2ENR     (*(volatile uint32_t *)0x40021018)
-
-/* ================= GPIOB REGISTERS ================= */
-
-#define GPIOB_CRL       (*(volatile uint32_t *)0x40010C00)
-#define GPIOB_CRH       (*(volatile uint32_t *)0x40010C04)
-#define GPIOB_IDR       (*(volatile uint32_t *)0x40010C08)
-#define GPIOB_ODR       (*(volatile uint32_t *)0x40010C0C)
-#define GPIOB_BSRR      (*(volatile uint32_t *)0x40010C10)
-#define GPIOB_BRR       (*(volatile uint32_t *)0x40010C14)
-
-/* ================= PIN DEFINITIONS ================= */
-
-#define LED_GREEN_PIN   0
-#define LED_YELLOW_PIN  1
-#define LED_RED_PIN     5
-
-#define BUTTON_PIN      8
-
-/* ================= GPIO INITIALIZATION ================= */
+static const uint16_t s_led_pin[LED_COUNT] = { GPIO_Pin_0, GPIO_Pin_1, GPIO_Pin_5 };
+static hal_gpio_cb_t s_button_cb = 0;
 
 void hal_gpio_init(void)
 {
-    /* Enable GPIOB clock */
-    RCC_APB2ENR |= (1U << 3);
+    GPIO_InitTypeDef gpio;
+    EXTI_InitTypeDef exti;
+    NVIC_InitTypeDef nvic;
 
-    /* PB0: Output push-pull, 2MHz */
-    GPIOB_CRL &= ~(0xFU << 0);
-    GPIOB_CRL |=  (0x2U << 0);
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
 
-    /* PB1: Output push-pull, 2MHz */
-    GPIOB_CRL &= ~(0xFU << 4);
-    GPIOB_CRL |=  (0x2U << 4);
+    /* 3 LED: output push-pull, tat het luc dau */
+    gpio.GPIO_Pin   = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_5;
+    gpio.GPIO_Mode  = GPIO_Mode_Out_PP;
+    gpio.GPIO_Speed = GPIO_Speed_2MHz;
+    GPIO_Init(GPIOB, &gpio);
+    GPIO_ResetBits(GPIOB, GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_5);
 
-    /* PB5: Output push-pull, 2MHz */
-    GPIOB_CRL &= ~(0xFU << 20);
-    GPIOB_CRL |=  (0x2U << 20);
+    /* Nut nhan PB8: input pull-up */
+    gpio.GPIO_Pin  = GPIO_Pin_8;
+    gpio.GPIO_Mode = GPIO_Mode_IPU;
+    GPIO_Init(GPIOB, &gpio);
 
-    /* PB8: Input pull-up / pull-down */
-    GPIOB_CRH &= ~(0xFU << 0);
-    GPIOB_CRH |=  (0x8U << 0);
+    /* EXTI line 8, canh xuong (luc nhan) */
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOB, GPIO_PinSource8);
+    exti.EXTI_Line    = EXTI_Line8;
+    exti.EXTI_Mode    = EXTI_Mode_Interrupt;
+    exti.EXTI_Trigger = EXTI_Trigger_Falling;
+    exti.EXTI_LineCmd = ENABLE;
+    EXTI_Init(&exti);
 
-    /* Select pull-up */
-    GPIOB_ODR |= (1U << BUTTON_PIN);
-
-    /* Turn off all LEDs initially */
-    GPIOB_BRR = (1U << LED_GREEN_PIN)
-              | (1U << LED_YELLOW_PIN)
-              | (1U << LED_RED_PIN);
+    /* Uu tien 10: du thap de dung duoc API ...FromISR cua FreeRTOS sau nay */
+    nvic.NVIC_IRQChannel                   = EXTI9_5_IRQn;
+    nvic.NVIC_IRQChannelPreemptionPriority = 10;
+    nvic.NVIC_IRQChannelSubPriority        = 0;
+    nvic.NVIC_IRQChannelCmd                = ENABLE;
+    NVIC_Init(&nvic);
 }
-
-/* ================= LED CONTROL ================= */
 
 void hal_gpio_write(uint8_t led, uint8_t state)
 {
-    uint8_t pin;
-
-    /* Select LED pin */
-    switch (led)
-    {
-        case LED_GREEN:
-            pin = LED_GREEN_PIN;
-            break;
-
-        case LED_YELLOW:
-            pin = LED_YELLOW_PIN;
-            break;
-
-        case LED_RED:
-            pin = LED_RED_PIN;
-            break;
-
-        default:
-            return;
-    }
-
-    /* Set or reset GPIO pin */
-    if (state == GPIO_HIGH)
-    {
-        GPIOB_BSRR = (1U << pin);
-    }
-    else if (state == GPIO_LOW)
-    {
-        GPIOB_BRR = (1U << pin);
-    }
+    if (led >= LED_COUNT) return;
+    if (state == GPIO_HIGH)     GPIO_SetBits(GPIOB, s_led_pin[led]);
+    else if (state == GPIO_LOW) GPIO_ResetBits(GPIOB, s_led_pin[led]);
 }
 
-/* ================= BUTTON READING ================= */
+void hal_gpio_toggle(uint8_t led)
+{
+    if (led >= LED_COUNT) return;
+    GPIO_WriteBit(GPIOB, s_led_pin[led],
+                  (BitAction)!GPIO_ReadOutputDataBit(GPIOB, s_led_pin[led]));
+}
 
 uint8_t hal_gpio_read(void)
 {
-    /* Pull-up:
-       Pressed  = LOW
-       Released = HIGH
-    */
+    return GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_8) ? BUTTON_RELEASED : BUTTON_PRESSED;
+}
 
-    if (GPIOB_IDR & (1U << BUTTON_PIN))
+void hal_gpio_set_button_callback(hal_gpio_cb_t cb)
+{
+    s_button_cb = cb;
+}
+
+void EXTI9_5_IRQHandler(void)
+{
+    if (EXTI_GetITStatus(EXTI_Line8) != RESET)
     {
-        return BUTTON_RELEASED;
+        EXTI_ClearITPendingBit(EXTI_Line8);
+        if (s_button_cb) s_button_cb();
     }
-
-    return BUTTON_PRESSED;
 }

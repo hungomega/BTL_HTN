@@ -1,40 +1,62 @@
-/*
- * Chuong trinh thu toolchain: nhay LED PC13 (LED tren Blue Pill, muc thap la sang).
- * Sau nay main.c se thanh: khoi tao BSP/HAL, tao task, vTaskStartScheduler().
- */
 #include "stm32f10x.h"
+#include "hal_gpio.h"
 
+static volatile uint8_t g_btn_flag = 0;
 static volatile uint32_t g_tick_ms = 0;
 
-/* TAM THOI: khi tich hop FreeRTOS thi xoa ham nay (FreeRTOS tu quan ly SysTick). */
 void SysTick_Handler(void)
 {
     g_tick_ms++;
 }
 
-static void delay_ms(uint32_t ms)
+/* Callback từ EXTI */
+static void on_button(void)
 {
-    uint32_t start = g_tick_ms;
-    while ((g_tick_ms - start) < ms) { }
+    g_btn_flag = 1;
+}
+
+/* Hiển thị 4 mức LED */
+static void show_level(uint8_t level)
+{
+    hal_gpio_write(LED_GREEN,  level >= 1);
+    hal_gpio_write(LED_YELLOW, level >= 2);
+    hal_gpio_write(LED_RED,    level >= 3);
 }
 
 int main(void)
 {
-    GPIO_InitTypeDef gpio;
+    uint8_t level = 0;
+    uint32_t last_press = 0;
 
-    SysTick_Config(SystemCoreClock / 1000);      /* ngat moi 1 ms */
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
 
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
-    gpio.GPIO_Pin   = GPIO_Pin_13;
-    gpio.GPIO_Mode  = GPIO_Mode_Out_PP;
-    gpio.GPIO_Speed = GPIO_Speed_2MHz;
-    GPIO_Init(GPIOC, &gpio);
+    /* SysTick 1ms */
+    SysTick_Config(SystemCoreClock / 1000);
 
-    for (;;)
+    hal_gpio_init();
+    hal_gpio_set_button_callback(on_button);
+
+    show_level(level);
+
+    while (1)
     {
-        GPIO_ResetBits(GPIOC, GPIO_Pin_13);       /* LED sang */
-        delay_ms(500);
-        GPIO_SetBits(GPIOC, GPIO_Pin_13);         /* LED tat */
-        delay_ms(500);
+        if (g_btn_flag)
+        {
+            g_btn_flag = 0;
+
+            /* Chống rung 50ms */
+            if ((g_tick_ms - last_press) >= 50)
+            {
+                if (hal_gpio_read() == BUTTON_PRESSED)
+                {
+                    last_press = g_tick_ms;
+
+                    /* Tăng mức LED */
+                    level = (level + 1) % 4;
+
+                    show_level(level);
+                }
+            }
+        }
     }
 }
