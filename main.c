@@ -1,5 +1,7 @@
+
 #include "stm32f10x.h"
 #include "hal_gpio.h"
+#include "hal_uart.h"
 
 static volatile uint8_t g_btn_flag = 0;
 static volatile uint32_t g_tick_ms = 0;
@@ -27,19 +29,26 @@ int main(void)
 {
     uint8_t level = 0;
     uint32_t last_press = 0;
+    uint32_t last_uart_send = 0;
 
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
 
     /* SysTick 1ms */
     SysTick_Config(SystemCoreClock / 1000);
 
+    /* Khởi tạo GPIO */
     hal_gpio_init();
+
+    /* Khởi tạo UART */
+    hal_uart_init();
+
     hal_gpio_set_button_callback(on_button);
 
     show_level(level);
 
     while (1)
     {
+        /* Xử lý nút nhấn - GIỮ NGUYÊN GPIO */
         if (g_btn_flag)
         {
             g_btn_flag = 0;
@@ -57,6 +66,14 @@ int main(void)
                     show_level(level);
                 }
             }
+        }
+
+        /* Gửi UART mỗi 1 giây */
+        if ((g_tick_ms - last_uart_send) >= 1000)
+        {
+            last_uart_send = g_tick_ms;
+
+            hal_uart_send_string("STM32 USART1 UART OK!\r\n");
         }
     }
 }
