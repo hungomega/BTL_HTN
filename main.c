@@ -41,6 +41,7 @@ int main(void)
 
     /* Khởi tạo UART */
     hal_uart_init();
+    hal_uart_dma_init();
 
     hal_gpio_set_button_callback(on_button);
 
@@ -69,11 +70,12 @@ int main(void)
         }
 
         /* Gửi UART mỗi 1 giây */
-        if ((g_tick_ms - last_uart_send) >= 1000)
+      if ((g_tick_ms - last_uart_send) >= 1000)
         {
-            last_uart_send = g_tick_ms;
-
-            hal_uart_send_string("STM32 USART1 UART OK!\r\n");
+            if (hal_uart_send_dma("STM32 USART1 DMA OK!\r\n"))
+            {
+                last_uart_send = g_tick_ms;
+            }
         }
     }
 }
