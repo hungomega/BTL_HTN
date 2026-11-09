@@ -1,136 +1,222 @@
-#include "stm32f10x.h"
-#include "stm32f10x_gpio.h"
-#include "stm32f10x_rcc.h"
-#include "stm32f10x_i2c.h"
-#include <stdio.h>
+#include "lcd_i2c.h"
 
-// Ð?a ch? I2C c?a module PCF8574 (thu?ng là 0x27 ho?c 0x3F, d?ch trái 1 bit)
-#define LCD_I2C_ADDR    (0x27 << 1) 
+/* Bit dieu khien tren PCF8574 (P0..P3), P4..P7 = D4..D7 cua LCD */
+#define PCF_RS   0x01U
+#define PCF_EN   0x04U
+#define PCF_BL   0x08U
 
-// Ð?nh nghia các chân tín hi?u k?t n?i trên chip m? r?ng PCF8574 cho LCD 1602
-#define LCD_RS_PIN      0x01  // P0 - Register Select
-#define LCD_RW_PIN      0x02  // P1 - Read/Write
-#define LCD_EN_PIN      0x04  // P2 - Enable pin
-#define LCD_BACKLIGHT   0x08  // P3 - Ðèn n?n LCD
+#define LCD_CMD_CLEAR        0x01U
+#define LCD_CMD_HOME         0x02U
+#define LCD_CMD_ENTRY_MODE   0x06U
+#define LCD_CMD_DISPLAY_OFF  0x08U
+#define LCD_CMD_DISPLAY_ON   0x0CU
+#define LCD_CMD_FUNC_SET     0x28U   /* 4 bit, 2 dong, 5x8 */
+#define LCD_CMD_SET_DDRAM    0x80U
 
-/* ==================== 1. T?NG I2C1 (PB6: SCL, PB7: SDA) ==================== */
+static uint8_t s_backlight = PCF_BL;
 
-void I2C1_Init(void) {
-    GPIO_InitTypeDef GPIO_InitStructure;
-    I2C_InitTypeDef  I2C_InitStructure;
+/* ================= Delay bang DWT->CYCCNT ================= */
+static void dwt_init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+}
 
-    // B?t clock cho GPIOB, AFIO và I2C1[cite: 2]
+static void delay_ms(uint32_t ms)
+{
+    uint32_t start = DWT->CYCCNT;
+    uint32_t ticks = ms * (SystemCoreClock / 1000U);
+    while ((uint32_t)(DWT->CYCCNT - start) < ticks) { }
+}
+
+/* ================= I2C: gui 1 byte toi PCF8574 =================
+ * Moi lan goi = 1 giao dich day du:
+ *   START -> dia chi -> 1 byte du lieu -> STOP
+ * Tra ve 0 neu OK, -1 neu loi (timeout hoac khong co ACK).
+ */
+static int i2c_wait_event(uint32_t event)
+{
+    uint32_t t = LCD_I2C_TIMEOUT;
+
+    while (!I2C_CheckEvent(I2C1, event)) {
+        if (--t == 0U) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int i2c_fail(void)
+{
+    I2C_GenerateSTOP(I2C1, ENABLE);
+    I2C_ClearFlag(I2C1, I2C_FLAG_AF);            /* xoa co NACK */
+    return -1;
+}
+
+static int i2c_send_byte(uint8_t data)
+{
+    uint32_t t = LCD_I2C_TIMEOUT;
+
+    /* 1. Cho bus ranh */
+    while (I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY)) {
+        if (--t == 0U) {
+            return i2c_fail();
+        }
+    }
+
+    /* 2. START */
+    I2C_GenerateSTART(I2C1, ENABLE);
+    if (i2c_wait_event(I2C_EVENT_MASTER_MODE_SELECT) != 0) {
+        return i2c_fail();
+    }
+
+    /* 3. Gui dia chi, cho PCF8574 tra ACK */
+    I2C_Send7bitAddress(I2C1, LCD_I2C_ADDR, I2C_Direction_Transmitter);
+    if (i2c_wait_event(I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED) != 0) {
+        return i2c_fail();
+    }
+
+    /* 4. Gui 1 byte du lieu */
+    I2C_SendData(I2C1, data);
+    if (i2c_wait_event(I2C_EVENT_MASTER_BYTE_TRANSMITTED) != 0) {
+        return i2c_fail();
+    }
+
+    /* 5. STOP */
+    I2C_GenerateSTOP(I2C1, ENABLE);
+    return 0;
+}
+
+/* ================= LCD qua PCF8574 ================= */
+
+/* Gui 4 bit cao cua 'nibble' toi LCD: bat EN roi tat EN de LCD chot du lieu */
+static int lcd_write_nibble(uint8_t nibble, uint8_t rs)
+{
+    uint8_t d = (uint8_t)((nibble & 0xF0U) | s_backlight | (rs ? PCF_RS : 0U));
+
+    if (i2c_send_byte((uint8_t)(d | PCF_EN)) != 0) {
+        return -1;
+    }
+    return i2c_send_byte(d);
+}
+
+/* Gui 1 byte = 2 nibble (cao truoc, thap sau). rs=0: lenh, rs=1: ky tu */
+static void lcd_write_byte(uint8_t value, uint8_t rs)
+{
+    (void)lcd_write_nibble(value, rs);                         /* 4 bit cao */
+    (void)lcd_write_nibble((uint8_t)(value << 4), rs);         /* 4 bit thap */
+}
+
+static void lcd_cmd(uint8_t cmd)
+{
+    lcd_write_byte(cmd, 0);
+    if (cmd == LCD_CMD_CLEAR || cmd == LCD_CMD_HOME) {
+        delay_ms(2);                             /* lenh xoa / ve dau can ~1.5 ms */
+    }
+}
+
+static void lcd_data(uint8_t ch)
+{
+    lcd_write_byte(ch, 1);
+}
+
+/* ================= Ham cong khai ================= */
+int lcd_init(void)
+{
+    GPIO_InitTypeDef gpio;
+    I2C_InitTypeDef  i2c;
+
+    dwt_init();
+
+    /* PB6 = SCL, PB7 = SDA (open-drain, module da co dien tro keo len) */
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
 
-    // C?u hình chân PB6 (SCL) và PB7 (SDA) d?ng Alternate Function Open-Drain[cite: 2]
-    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_6 | GPIO_Pin_7;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_AF_OD; 
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
+    gpio.GPIO_Pin   = GPIO_Pin_6 | GPIO_Pin_7;
+    gpio.GPIO_Mode  = GPIO_Mode_AF_OD;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOB, &gpio);
 
-    // C?u hình thông s? I2C1 (T?c d? chu?n 100kHz)
-    I2C_InitStructure.I2C_Mode                = I2C_Mode_I2C;
-    I2C_InitStructure.I2C_DutyCycle           = I2C_DutyCycle_2;
-    I2C_InitStructure.I2C_OwnAddress1         = 0x00;
-    I2C_InitStructure.I2C_Ack                 = I2C_Ack_Enable;
-    I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
-    I2C_InitStructure.I2C_ClockSpeed          = 100000; 
-
-    I2C_Init(I2C1, &I2C_InitStructure);
+    I2C_DeInit(I2C1);
+    i2c.I2C_Mode                = I2C_Mode_I2C;
+    i2c.I2C_DutyCycle           = I2C_DutyCycle_2;
+    i2c.I2C_OwnAddress1         = 0x00;
+    i2c.I2C_Ack                 = I2C_Ack_Enable;
+    i2c.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
+    i2c.I2C_ClockSpeed          = LCD_I2C_SPEED_HZ;
+    I2C_Init(I2C1, &i2c);
     I2C_Cmd(I2C1, ENABLE);
-}
 
-void I2C_WriteBytes(uint8_t slave_addr, uint8_t *pData, uint16_t size) {
-    while(I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY));
+    s_backlight = PCF_BL;
+    delay_ms(50);                                /* doi LCD len nguon */
 
-    I2C_GenerateSTART(I2C1, ENABLE);
-    while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
-
-    I2C_Send7bitAddress(I2C1, slave_addr, I2C_Direction_Transmitter);
-    while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED));
-
-    for(uint16_t i = 0; i < size; i++) {
-        I2C_SendData(I2C1, pData[i]);
-        while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTING));
+    /* Chuoi khoi dong chuyen LCD sang che do 4 bit (theo datasheet HD44780) */
+    if (lcd_write_nibble(0x30U, 0) != 0) {
+        return -1;                               /* khong co ACK: sai dia chi / noi day */
     }
-    
-    while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-    I2C_GenerateSTOP(I2C1, ENABLE);
+    delay_ms(5);
+    (void)lcd_write_nibble(0x30U, 0);
+    delay_ms(2);
+    (void)lcd_write_nibble(0x30U, 0);
+    delay_ms(2);
+    (void)lcd_write_nibble(0x20U, 0);            /* chuyen sang 4 bit */
+    delay_ms(2);
+
+    lcd_cmd(LCD_CMD_FUNC_SET);
+    lcd_cmd(LCD_CMD_DISPLAY_OFF);
+    lcd_cmd(LCD_CMD_CLEAR);
+    lcd_cmd(LCD_CMD_ENTRY_MODE);
+    lcd_cmd(LCD_CMD_DISPLAY_ON);
+    return 0;
 }
 
-void I2C_WriteByte(uint8_t slave_addr, uint8_t data) {
-    I2C_WriteBytes(slave_addr, &data, 1);
+void lcd_clear(void)
+{
+    lcd_cmd(LCD_CMD_CLEAR);
 }
 
-
-/* ==================== 2. T?NG LCD 1602 I2C ==================== */
-
-static void LCD_Write_I2C(uint8_t data) {
-    I2C_WriteByte(LCD_I2C_ADDR, data);
+void lcd_home(void)
+{
+    lcd_cmd(LCD_CMD_HOME);
 }
 
-static void LCD_Send_Nibble(uint8_t nibble, uint8_t control) {
-    uint8_t data = nibble | control | LCD_BACKLIGHT;
-    LCD_Write_I2C(data | LCD_EN_PIN); // B?t chân EN
-    for(volatile uint32_t i = 0; i < 150; i++); 
-    LCD_Write_I2C(data & ~LCD_EN_PIN); // T?t chân EN d? ch?t d? li?u
+void lcd_backlight(uint8_t on)
+{
+    s_backlight = on ? PCF_BL : 0U;
+    (void)i2c_send_byte(s_backlight);
 }
 
-static void LCD_Send_Cmd_Data(uint8_t value, uint8_t control) {
-    uint8_t high_nibble = value & 0xF0;
-    uint8_t low_nibble = (value << 4) & 0xF0;
-    LCD_Send_Nibble(high_nibble, control);
-    LCD_Send_Nibble(low_nibble, control);
+void lcd_set_cursor(uint8_t col, uint8_t row)
+{
+    uint8_t addr;
+
+    if (row >= LCD_ROWS) { row = LCD_ROWS - 1U; }
+    if (col >= LCD_COLS) { col = LCD_COLS - 1U; }
+
+    addr = (row == 0U) ? 0x00U : 0x40U;          /* dong 0 bat dau 0x00, dong 1 bat dau 0x40 */
+    lcd_cmd((uint8_t)(LCD_CMD_SET_DDRAM | (addr + col)));
 }
 
-void LCD_SendCommand(uint8_t cmd) {
-    LCD_Send_Cmd_Data(cmd, 0); // RS = 0 (L?nh)
-}
-
-void LCD_SendData(uint8_t data) {
-    LCD_Send_Cmd_Data(data, LCD_RS_PIN); // RS = 1 (D? li?u)
-}
-
-void LCD_Init(void) {
-    I2C1_Init(); // Kh?i t?o ph?n c?ng I2C1 tru?c
-    for(volatile uint32_t i = 0; i < 50000; i++); 
-
-    LCD_Send_Nibble(0x30, 0);
-    for(volatile uint32_t i = 0; i < 10000; i++);
-    LCD_Send_Nibble(0x30, 0);
-    for(volatile uint32_t i = 0; i < 1000; i++);
-    LCD_Send_Nibble(0x30, 0);
-    LCD_Send_Nibble(0x20, 0); // Ch? d? 4-bit
-
-    LCD_SendCommand(0x28); // 2 dòng, font 5x8
-    LCD_SendCommand(0x0C); // B?t hi?n th?, t?t con tr?
-    LCD_SendCommand(0x06); // Tang con tr? t? d?ng
-    LCD_SendCommand(0x01); // Xóa màn hình
-    for(volatile uint32_t i = 0; i < 5000; i++);
-}
-
-void LCD_SetCursor(uint8_t row, uint8_t col) {
-    uint8_t address = (row == 0) ? 0x80 : 0xC0;
-    address += col;
-    LCD_SendCommand(address);
-}
-
-void LCD_Print(const char *str) {
-    while (*str) {
-        LCD_SendData(*str++);
+void lcd_print(const char *str)
+{
+    while (*str != '\0') {
+        lcd_data((uint8_t)*str);
+        str++;
     }
 }
 
-// Hàm hi?n th? m?c ?n (dB) và tr?ng thái theo yêu c?u d? cuong bài t?p l?n[cite: 1, 2]
-void LCD_Display_NoiseData(float db_value, float threshold, const char *status_str) {
-    char buffer[17];
+void lcd_print_line(uint8_t row, const char *str)
+{
+    uint8_t i;
 
-    LCD_SetCursor(0, 0);
-    snprintf(buffer, sizeof(buffer), "dB:%.1f Th:%.1f", db_value, threshold);
-    LCD_Print(buffer);
-
-    LCD_SetCursor(1, 0);
-    snprintf(buffer, sizeof(buffer), "Status: %-8s", status_str);
-    LCD_Print(buffer);
+    lcd_set_cursor(0, row);
+    for (i = 0; i < LCD_COLS; i++) {
+        if (*str != '\0') {
+            lcd_data((uint8_t)*str);
+            str++;
+        } else {
+            lcd_data(' ');                       /* chen khoang trang cho du 16 ky tu */
+        }
+    }
 }
