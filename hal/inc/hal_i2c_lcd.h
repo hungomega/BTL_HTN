@@ -5,8 +5,8 @@
  * PCF8574: P0=RS, P1=RW, P2=EN, P3=den nen, P4..P7=D4..D7.
  * Delay dung bo dem chu ky DWT (khong can SysTick).
  */
-#ifndef HAL_I2c_LCD_H
-#define HAL_I2c_LCD_H
+#ifndef HAL_I2C_LCD_H
+#define HAL_I2C_LCD_H
 
 #include "stm32f10x.h"
 #include <stdint.h>
