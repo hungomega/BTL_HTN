@@ -1,10 +1,12 @@
 #include "hal_adc_dma.h"
 #include <math.h>          /* link voi -lm */
+#include "FreeRTOS.h"
+#include "semphr.h"
 
 static uint16_t          s_buf[MIC_BUFFER_SAMPLES];
 static volatile uint8_t  s_ready_half;     /* 0 = nua dau vua day, 1 = nua sau */
-static volatile uint8_t  s_pending;        /* so khoi moi chua duoc main lay */
 static volatile uint32_t s_overruns;
+static SemaphoreHandle_t s_sem;            /* ISR give, task take */
 
 void mic_init(void)
 {
@@ -13,6 +15,8 @@ void mic_init(void)
     DMA_InitTypeDef          dma;
     ADC_InitTypeDef          adc;
     NVIC_InitTypeDef         nvic;
+
+    s_sem = xSemaphoreCreateBinary();
 
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_ADC1, ENABLE);
@@ -50,7 +54,7 @@ void mic_init(void)
     DMA_ITConfig(DMA1_Channel1, DMA_IT_HT | DMA_IT_TC, ENABLE);
 
     nvic.NVIC_IRQChannel                   = DMA1_Channel1_IRQn;
-    nvic.NVIC_IRQChannelPreemptionPriority = 1;
+    nvic.NVIC_IRQChannelPreemptionPriority = 6;       /* >= 5 de goi duoc API FromISR */
     nvic.NVIC_IRQChannelSubPriority        = 0;
     nvic.NVIC_IRQChannelCmd                = ENABLE;
     NVIC_Init(&nvic);
@@ -79,7 +83,6 @@ void mic_init(void)
 
 void mic_start(void)
 {
-    s_pending = 0;
     DMA_Cmd(DMA1_Channel1, ENABLE);
     TIM_Cmd(TIM3, ENABLE);
 }
@@ -90,24 +93,12 @@ void mic_stop(void)
     DMA_Cmd(DMA1_Channel1, DISABLE);
 }
 
-uint8_t mic_get_block(const uint16_t **block)
+uint8_t mic_wait_block(const uint16_t **block, uint32_t timeout_ms)
 {
-    uint8_t n;
-    uint8_t half;
-
-    __disable_irq();                 /* doc va xoa co nguyen tu so voi ISR */
-    n    = s_pending;
-    half = s_ready_half;
-    s_pending = 0;
-    __enable_irq();
-
-    if (n == 0U) {
-        return 0;
+    if (xSemaphoreTake(s_sem, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return 0;                                     /* het gio, khong co khoi moi */
     }
-    if (n > 1U) {
-        s_overruns += (uint32_t)(n - 1U);             /* main cham, bo lo khoi truoc */
-    }
-    *block = &s_buf[half ? MIC_BLOCK_SAMPLES : 0U];
+    *block = &s_buf[s_ready_half ? MIC_BLOCK_SAMPLES : 0U];
     return 1;
 }
 
@@ -151,17 +142,25 @@ float mic_compute_db(const uint16_t *block, uint32_t len)
     return mic_rms_to_db(mic_compute_rms(block, len));
 }
 
-/* Ngat DMA1 kenh 1: nua buffer (HT) hoac day buffer (TC) */
+/* Ngat DMA1 kenh 1: nua buffer (HT) hoac day buffer (TC) -> danh thuc task */
 void DMA1_Channel1_IRQHandler(void)
 {
+    BaseType_t woken = pdFALSE;
+    uint8_t    got   = 0;
+
     if (DMA_GetITStatus(DMA1_IT_HT1) != RESET) {
         DMA_ClearITPendingBit(DMA1_IT_HT1);
         s_ready_half = 0;
-        s_pending++;
+        got = 1;
     }
     if (DMA_GetITStatus(DMA1_IT_TC1) != RESET) {
         DMA_ClearITPendingBit(DMA1_IT_TC1);
         s_ready_half = 1;
-        s_pending++;
+        got = 1;
     }
+    /* semaphore con day = task chua kip lay khoi truoc -> dem 1 lan bo lo */
+    if (got && xSemaphoreGiveFromISR(s_sem, &woken) == pdFALSE) {
+        s_overruns++;
+    }
+    portYIELD_FROM_ISR(woken);
 }
