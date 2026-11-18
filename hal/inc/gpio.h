@@ -3,7 +3,7 @@
  *
  * LED : PB0 (den do + dien tro 220-330 ohm xuong GND)
  * Nut : PB8 noi xuong GND (dien tro keo len noi bo), quet 10 ms, chong rung phan mem.
- *       Goi button_update(now_ms) moi BTN_SCAN_MS, now_ms = thoi gian he thong (ms) tu SysTick.
+ *       Goi button_update(now_ms) moi BTN_SCAN_MS, now_ms = xTaskGetTickCount() (tick FreeRTOS = 1 ms).
  */
 #ifndef GPIO_H
 #define GPIO_H

@@ -1,4 +1,4 @@
-#include "hal_i2c_lcd.h"
+#include "hal_lcd_i2c.h"
 
 /* Bit dieu khien tren PCF8574 (P0..P3), P4..P7 = D4..D7 cua LCD */
 #define PCF_RS   0x01U

@@ -1,10 +1,19 @@
+# Keil uVision
+Objects/
+Listings/
+*.o
+*.d
+*.axf
+*.hex
+*.elf
+*.crf
+*.lst
+*.map
+*.htm
+*.dep
+*.uvguix.*
+*.uvoptx
+JLinkLog.txt
 build/
 Debug/
 Release/
-*.o
-*.elf
-*.hex
-*.bin
-*.map
-*.d
-.vscode/
