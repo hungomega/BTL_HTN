@@ -1,17 +1,17 @@
-#include "hal_i2c_lcd.h"
+#include "hal_lcd_i2c.h"
 
 /* Bit dieu khien tren PCF8574 (P0..P3), P4..P7 = D4..D7 cua LCD */
 #define PCF_RS   0x01U
 #define PCF_EN   0x04U
 #define PCF_BL   0x08U
 
-#define LCD_CMD_CLEAR        0x01U
-#define LCD_CMD_HOME         0x02U
-#define LCD_CMD_ENTRY_MODE   0x06U
-#define LCD_CMD_DISPLAY_OFF  0x08U
-#define LCD_CMD_DISPLAY_ON   0x0CU
-#define LCD_CMD_FUNC_SET     0x28U   /* 4 bit, 2 dong, 5x8 */
-#define LCD_CMD_SET_DDRAM    0x80U
+#define LCD_CMD_CLEAR        0x01U 	/*xoa man hinh*/
+#define LCD_CMD_HOME         0x02U	/*dua con tro ve goc*/
+#define LCD_CMD_ENTRY_MODE   0x06U	/*che do nhap/dich con tro*/
+#define LCD_CMD_DISPLAY_OFF  0x08U	/*tat hien thi man hinh */
+#define LCD_CMD_DISPLAY_ON   0x0CU	/*bat hien thi man hinh */
+#define LCD_CMD_FUNC_SET     0x28U   /* 4 bit, 2 dong, 5x8 */ //cai dat chuc nang
+#define LCD_CMD_SET_DDRAM    0x80U	/*thiet lap dia chi bo nho DDRAM */
 
 static uint8_t s_backlight = PCF_BL;
 

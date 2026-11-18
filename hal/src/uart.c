@@ -32,18 +32,27 @@ void uart_init(void)
 /* Gui 1 ky tu: cho thanh ghi du lieu trong (TXE) roi ghi vao */
 void uart_send_char(char c)
 {
-    while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET) { }
+    uint32_t t = UART_TIMEOUT;
+
+    while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET) {
+        if (--t == 0U) { return; }
+    }
     USART_SendData(USART1, (uint16_t)(uint8_t)c);
 }
 
 /* Gui ca chuoi, cho ky tu cuoi di het ra day (TC) */
 void uart_send_string(const char *str)
 {
+    uint32_t t;
+
     while (*str != '\0') {
         uart_send_char(*str);
         str++;
     }
-    while (USART_GetFlagStatus(USART1, USART_FLAG_TC) == RESET) { }
+    t = UART_TIMEOUT;
+    while (USART_GetFlagStatus(USART1, USART_FLAG_TC) == RESET) {
+        if (--t == 0U) { return; }
+    }
 }
 
 /* Gui 1 dong trang thai, vi du:

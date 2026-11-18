@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #define UART_BAUDRATE   115200U
+#define UART_TIMEOUT    100000UL     /* so vong cho co TXE/TC, tranh treo task */
 
 void uart_init(void);
 void uart_send_char(char c);
